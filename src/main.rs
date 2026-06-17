@@ -1,3 +1,8 @@
+// bin から見ると lib export 済みの一部 item が未到達となり dead_code が大量発生する
+// (CI 初回 clippy 通過時に判明)。WIP feature の placeholder が多いため、bin crate
+// 全体に対して allow を立てる。lib 側は引き続き dead_code を検出する。
+#![allow(dead_code)]
+
 mod browser;
 mod config;
 #[cfg(feature = "grpc")]

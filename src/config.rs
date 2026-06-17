@@ -13,6 +13,9 @@ pub enum LogFormat {
 }
 
 impl LogFormat {
+    // Lossy: 未知の値は Self::Text にフォールバックするため `FromStr` (Result) ではなく
+    // 専用メソッドにしている。
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "json" => Self::Json,
@@ -31,6 +34,8 @@ pub enum LogRotation {
 }
 
 impl LogRotation {
+    // Lossy: 未知の値は Self::Daily にフォールバック。
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "hourly" => Self::Hourly,
@@ -206,14 +211,14 @@ fn parse_duration_string(s: &str) -> Option<Duration> {
         return None;
     }
 
-    let (num_str, unit) = if s.ends_with("ms") {
-        (&s[..s.len() - 2], "ms")
-    } else if s.ends_with('s') {
-        (&s[..s.len() - 1], "s")
-    } else if s.ends_with('m') {
-        (&s[..s.len() - 1], "m")
-    } else if s.ends_with('h') {
-        (&s[..s.len() - 1], "h")
+    let (num_str, unit) = if let Some(rest) = s.strip_suffix("ms") {
+        (rest, "ms")
+    } else if let Some(rest) = s.strip_suffix('s') {
+        (rest, "s")
+    } else if let Some(rest) = s.strip_suffix('m') {
+        (rest, "m")
+    } else if let Some(rest) = s.strip_suffix('h') {
+        (rest, "h")
     } else {
         return None;
     };
