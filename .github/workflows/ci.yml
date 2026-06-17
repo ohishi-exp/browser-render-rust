@@ -20,6 +20,15 @@ jobs:
       # workspace member, so cargo metadata fails without recursing it.
       # Input added in ippoan/ci-workflows#138.
       submodules: 'recursive'
+      # Cargo.lock is in .gitignore for this repo, so --locked (the rust-ci
+      # default) breaks cargo build. Drop it; the trade-off is non-
+      # reproducible CI builds, but matches the existing repo policy.
+      cargo_build_args: ''
+      # Drop `--all-features` from clippy/test: the optional `grpc` feature
+      # triggers build.rs → tonic_build → requires `protoc`, which is not
+      # available on the default GitHub runner image. Default features only.
+      cargo_test_args: '--no-fail-fast'
+      cargo_clippy_args: '--all-targets -- -D warnings'
 
   auto-merge:
     name: Auto Merge
