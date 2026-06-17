@@ -16,6 +16,10 @@ jobs:
     with:
       binary_name: browser-render
       shared_key: browser-render-rust
+      # rust-scraper/ is a git submodule (ohishi-exp/rust-scraper) and a
+      # workspace member, so cargo metadata fails without recursing it.
+      # Input added in ippoan/ci-workflows#138.
+      submodules: 'recursive'
 
   auto-merge:
     name: Auto Merge
