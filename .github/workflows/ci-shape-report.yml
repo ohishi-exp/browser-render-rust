@@ -1,0 +1,20 @@
+name: ci-shape-report
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    uses: ippoan/ci-workflows/.github/workflows/ci-shape-report.yml@main
+    secrets:
+      CI_SHAPE_SECRET: ${{ secrets.RELEASE_WAVE_WEBHOOK_SECRET }}
