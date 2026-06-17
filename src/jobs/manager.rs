@@ -32,18 +32,13 @@ impl std::fmt::Display for JobType {
 }
 
 /// Job priority enum
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum JobPriority {
-    Low,    // Run when idle
+    Low, // Run when idle
+    #[default]
     Normal, // Normal priority
-    High,   // Run immediately
-}
-
-impl Default for JobPriority {
-    fn default() -> Self {
-        JobPriority::Normal
-    }
+    High, // Run immediately
 }
 
 /// Job status enum
