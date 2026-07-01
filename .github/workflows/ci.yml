@@ -80,6 +80,14 @@ jobs:
     name: Deploy to Kagoya VPS
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [ci, smoke-test]
+    # 連続 push で複数の deploy job が同じ Kagoya VPS の同じコンテナ名
+    # (browser-render) に対して docker stop/rm/run を同時に叩くレースを防ぐ。
+    # cancel-in-progress: false = 先行 deploy を殺さず完走を待ってから
+    # 後続を実行する (本番切替中の kill は VPS を壊れた状態に残すリスクがある
+    # ため、dtako-scraper の PR プレビュー deploy とは異なり cancel しない)。
+    concurrency:
+      group: deploy-kagoya-vps
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
