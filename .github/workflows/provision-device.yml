@@ -1,0 +1,118 @@
+name: Provision device credential
+
+# INTERNAL_SHARED_SECRET を使って auth-worker から device credential を「1 回だけ」発行し、
+# Kagoya VPS の /opt/browser-render/.env に書き込む (+ 最新 image で再 deploy) 手動 workflow。
+#
+# 設計 (rust-alc-api#434 の device-token 方式):
+#   - INTERNAL_SHARED_SECRET は **CI (GitHub Actions) にだけ** 置き、VPS には配らない。
+#     pairing 1 回に使うだけなので blast radius を control plane に閉じ込められる。
+#   - VPS に届くのは tenant + `device-dtako-ingest` role (= /api/dtako-logs/bulk だけ) に
+#     スコープされた device credential だけ。個別 revoke 可・tenant 詐称不可。
+#   - device credential は VPS ではなく tenant に紐付くので、新しい VPS を立てた時や
+#     credential を rotate したい時に、この workflow を 1 回叩けば済む (手動 curl/SSH 不要)。
+#
+# 通常の deploy (ci.yml) は device 設定を一切触らない (.env に既に書かれた値をそのまま使う)。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_id:
+        description: 'dtako 送信先 tenant の UUID (rust-alc-api の tenants.id)'
+        required: true
+        type: string
+      label:
+        description: 'device のラベル (auth-worker 側の識別用)'
+        required: false
+        default: 'browser-render-rust (Kagoya VPS)'
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+# 通常 deploy (ci.yml deploy job) と同じ Kagoya VPS を触るので同一 group で直列化する。
+concurrency:
+  group: deploy-kagoya-vps
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Pair device and write VPS .env
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.KAGOYA_VPS_SSH_KEY }}
+
+      - name: Add VPS host key
+        env:
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
+        run: |
+          HOST="${KAGOYA_VPS_HOST##*@}"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      # pairing と .env 書き込みを 1 step に閉じる (= device_secret を $GITHUB_ENV に
+      # 残さず、この shell 内だけで完結させる)。DEVICE_SECRET は deploy-remote.sh の
+      # SSH env-var 前置き経路でのみ VPS に渡り、ログには出ない。
+      - name: Pair device and provision VPS .env
+        env:
+          INTERNAL_SHARED_SECRET: ${{ secrets.INTERNAL_SHARED_SECRET }}
+          AUTH_WORKER_URL: ${{ vars.AUTH_WORKER_URL || 'https://auth.ippoan.org' }}
+          TENANT_ID: ${{ inputs.tenant_id }}
+          DEVICE_LABEL: ${{ inputs.label }}
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
+          IMAGE: ghcr.io/ohishi-exp/browser-render-rust
+          TAG: latest
+          # VPS 側 docker pull 用 (deploy job と同じ job 限りの GITHUB_TOKEN)。
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INTERNAL_SHARED_SECRET:-}" ]; then
+            echo "::error::secrets.INTERNAL_SHARED_SECRET が未設定です (ippoan と同値を ohishi-exp org/repo secret に登録してください)"
+            exit 1
+          fi
+          if [ -z "${KAGOYA_VPS_HOST:-}" ]; then
+            echo "::error::secrets.KAGOYA_VPS_HOST が未設定です"
+            exit 1
+          fi
+          if [ -z "${TENANT_ID:-}" ]; then
+            echo "::error::tenant_id input が空です"
+            exit 1
+          fi
+
+          echo "Pairing device via ${AUTH_WORKER_URL%/}/device/pair-internal (tenant=${TENANT_ID}, role=device-dtako-ingest)..."
+          # body は jq で組んで label に含まれ得る記号で JSON が壊れないようにする。
+          body=$(jq -nc --arg t "$TENANT_ID" --arg l "$DEVICE_LABEL" \
+            '{tenant_id:$t, label:$l, role:"device-dtako-ingest"}')
+          resp=$(curl -sS -X POST "${AUTH_WORKER_URL%/}/device/pair-internal" \
+            -H "X-Internal-Shared-Secret: ${INTERNAL_SHARED_SECRET}" \
+            -H "Content-Type: application/json" \
+            --data-binary "$body")
+
+          DEVICE_ID=$(printf '%s' "$resp" | jq -r '.device_id // empty')
+          DEVICE_SECRET=$(printf '%s' "$resp" | jq -r '.device_secret // empty')
+          if [ -z "$DEVICE_ID" ] || [ -z "$DEVICE_SECRET" ]; then
+            echo "::error::device pairing に失敗しました"
+            # secret を含めずにエラー内容だけ出す。
+            printf '%s' "$resp" | jq -c 'if type=="object" then del(.device_secret) else . end' 2>/dev/null \
+              || echo "(non-JSON response)"
+            exit 1
+          fi
+          # ランタイム生成値は GitHub の自動マスク対象外なので即マスクする。
+          echo "::add-mask::$DEVICE_SECRET"
+          echo "Paired device_id=${DEVICE_ID} (secret masked)"
+
+          # deploy-remote.sh に device 設定を env で渡す (.env へ upsert + 最新 image で再起動)。
+          export DEPLOY_SSH_USER="${KAGOYA_VPS_HOST%%@*}"
+          export DEPLOY_SSH_HOST="${KAGOYA_VPS_HOST##*@}"
+          export DEVICE_ID DEVICE_SECRET AUTH_WORKER_URL
+          bash scripts/deploy-remote.sh
+
+          echo "### Provision: device paired & .env updated on Kagoya VPS (device_id=\`${DEVICE_ID}\`)" >> "$GITHUB_STEP_SUMMARY"
