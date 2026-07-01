@@ -30,6 +30,76 @@ jobs:
       cargo_test_args: '--no-fail-fast'
       cargo_clippy_args: '--all-targets -- -D warnings'
 
+  # main への merge (push) で Docker image を build → GHCR push → Kagoya VPS へ
+  # 直接 SSH で deploy する。`KAGOYA_VPS_SSH_KEY` / `KAGOYA_VPS_HOST` は
+  # dtako-scraper (同じ Kagoya VPS) と共有している既存の ohishi-exp org secret
+  # (dtako-scraper/CLAUDE.md 参照)。webfactory/ssh-agent で鍵を ssh-agent に
+  # 載せ、dtako-scraper/.github/workflows/deploy.yml と同じ直接 SSH パターンで
+  # 到達する (Cloudflare Tunnel は使わない)。手動 fallback は
+  # scripts/deploy-kagoya.sh に残す。
+  #
+  # 実 deploy (pull + restart + health check) ロジックは scripts/deploy-remote.sh
+  # に切り出し、build/push (このジョブ) とは分離している。
+  deploy:
+    name: Deploy to Kagoya VPS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        env:
+          IMAGE: ghcr.io/ohishi-exp/browser-render-rust
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          docker build \
+            --build-arg CARGO_BUILD_JOBS=2 \
+            -t "${IMAGE}:${TAG}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:latest"
+          echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.KAGOYA_VPS_SSH_KEY }}
+
+      - name: Add VPS host key
+        env:
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
+        run: |
+          HOST="${KAGOYA_VPS_HOST##*@}"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy over SSH
+        env:
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
+          IMAGE: ghcr.io/ohishi-exp/browser-render-rust
+          TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          if [ -z "$KAGOYA_VPS_HOST" ]; then
+            echo "::error::secrets.KAGOYA_VPS_HOST is not set" >&2
+            exit 1
+          fi
+          # KAGOYA_VPS_HOST は "ubuntu@<ip>" 形式 (dtako-scraper と共有の org secret)。
+          export DEPLOY_SSH_USER="${KAGOYA_VPS_HOST%%@*}"
+          export DEPLOY_SSH_HOST="${KAGOYA_VPS_HOST##*@}"
+          bash scripts/deploy-remote.sh
+
   auto-merge:
     name: Auto Merge
     needs: [ci]
@@ -39,6 +109,13 @@ jobs:
       github.event.pull_request.draft == false &&
       needs.ci.result == 'success'
     uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
+    # deploy job は push (refs/heads/master) 限定 trigger なので PR run の
+    # auto-merge とは排他で並走しない (= merge → branch 削除で deploy が cancel
+    # される race は起きない)。auto-merge.yml の deploy gate 静的検査は DAG だけ
+    # 見て trigger 排他を判別できず deploy を needs 未配線として loud fail する
+    # ので、明示的に除外する (rust-ichibanboshi ci.yml と同パターン)。
+    with:
+      deploy_gate_ignore: 'deploy'
     permissions:
       contents: write
       pull-requests: write
