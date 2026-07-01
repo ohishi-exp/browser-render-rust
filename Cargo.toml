@@ -75,6 +75,7 @@ grpc = ["tonic", "tonic-reflection", "tonic-web", "prost", "tonic-build", "http-
 [dev-dependencies]
 tempfile = "3"
 dotenvy = "0.15"
+wiremock = "0.6"
 
 [lib]
 name = "browser_render"

@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::browser::HonoApiResponse;
 use crate::config::Config;
+use crate::device_auth::mint_device_token;
 
 /// Job type enum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -624,7 +625,7 @@ async fn process_vehicle_job(
             // Send dtakologs to rust-alc-api REST if enabled
             let mut send_error: Option<String> = None;
             let hono_response = match &result {
-                Ok(scrape_result) if !config.rust_alc_api_url.is_empty() => {
+                Ok(scrape_result) if !config.auth_worker_url.is_empty() => {
                     match send_dtakologs(&config, &scrape_result.raw_data).await {
                         Ok(resp) => Some(resp),
                         Err(e) => {
@@ -744,22 +745,24 @@ async fn process_vehicle_job(
     });
 }
 
-/// Send dtakologs to rust-alc-api via REST POST
+/// Send dtakologs to rust-alc-api via the auth-worker `/device-data-proxy`
+/// (rust-alc-api#434: Cloud Run IAM lockdown 後、device JWT で認証する)
 async fn send_dtakologs(
     config: &Config,
     raw_data: &[serde_json::Value],
 ) -> Result<HonoApiResponse, String> {
-    if config.rust_alc_api_url.is_empty() {
-        return Err("RUST_ALC_API_URL not configured".to_string());
-    }
-    if config.tenant_id.is_empty() {
-        return Err("TENANT_ID not configured".to_string());
+    if config.auth_worker_url.is_empty() {
+        return Err("AUTH_WORKER_URL not configured".to_string());
     }
 
+    // device JWT を都度 mint する (TTL 1h、送信頻度は10分に1回程度なのでキャッシュしない)。
+    // tenant は device pairing 時に確定済みで、こちらから指定する必要はない。
+    let device_token = mint_device_token(config).await?;
+
     info!(
-        "send_dtakologs: Sending {} records to {} (REST)",
+        "send_dtakologs: Sending {} records via {} (device-data-proxy)",
         raw_data.len(),
-        config.rust_alc_api_url
+        config.auth_worker_url
     );
 
     // Convert DataDateTime from "YY/MM/DD HH:MM" to ISO8601 in each record
@@ -778,8 +781,8 @@ async fn send_dtakologs(
         .collect();
 
     let url = format!(
-        "{}/api/dtako-logs/bulk",
-        config.rust_alc_api_url.trim_end_matches('/')
+        "{}/device-data-proxy/api/dtako-logs/bulk",
+        config.auth_worker_url.trim_end_matches('/')
     );
 
     let client = reqwest::Client::builder()
@@ -789,7 +792,7 @@ async fn send_dtakologs(
 
     let resp = client
         .post(&url)
-        .header("X-Tenant-ID", &config.tenant_id)
+        .header("Authorization", format!("Bearer {}", device_token))
         .header("Content-Type", "application/json")
         .json(&records)
         .send()

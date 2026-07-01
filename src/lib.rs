@@ -1,5 +1,6 @@
 pub mod browser;
 pub mod config;
+pub mod device_auth;
 #[cfg(feature = "grpc")]
 pub mod grpc_web_client;
 pub mod jobs;
