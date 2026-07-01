@@ -77,9 +77,12 @@ pub struct Config {
     pub rust_logi_organization_id: String,
     pub grpc_send_timeout: Duration,
 
-    // rust-alc-api settings (dtakologs - REST)
-    pub rust_alc_api_url: String,
-    pub tenant_id: String,
+    // dtakologs (rust-alc-api) 送信設定 — device JWT 経由 (rust-alc-api#434)。
+    // auth-worker の `/device-data-proxy/api/dtako-logs/bulk` を叩く。tenant は
+    // device pairing 時に確定済みで、ここでは指定しない (X-Tenant-ID 詐称防止)。
+    pub auth_worker_url: String,
+    pub device_id: String,
+    pub device_secret: String,
     pub rest_send_timeout: Duration,
 
     // Logging settings
@@ -111,8 +114,9 @@ impl Config {
             rust_logi_url: get_env("RUST_LOGI_URL", ""),
             rust_logi_organization_id: get_env("RUST_LOGI_ORGANIZATION_ID", ""),
             grpc_send_timeout: get_env_duration("GRPC_SEND_TIMEOUT", Duration::from_secs(30)),
-            rust_alc_api_url: get_env("RUST_ALC_API_URL", ""),
-            tenant_id: get_env("TENANT_ID", ""),
+            auth_worker_url: get_env("AUTH_WORKER_URL", ""),
+            device_id: get_env("DEVICE_ID", ""),
+            device_secret: get_env("DEVICE_SECRET", ""),
             rest_send_timeout: get_env_duration("REST_SEND_TIMEOUT", Duration::from_secs(30)),
             log_format: LogFormat::from_str(&get_env("LOG_FORMAT", "text")),
             log_file: env::var("LOG_FILE").ok(),
@@ -125,12 +129,12 @@ impl Config {
             warn!("Authentication credentials not set in environment variables");
         }
 
-        // Validate rust-alc-api settings (dtakologs REST)
-        if cfg.rust_alc_api_url.is_empty() {
-            warn!("RUST_ALC_API_URL not set - dtakologs will not be sent");
+        // Validate dtakologs settings (device JWT 経由の auth-worker proxy)
+        if cfg.auth_worker_url.is_empty() {
+            warn!("AUTH_WORKER_URL not set - dtakologs will not be sent");
         }
-        if cfg.tenant_id.is_empty() {
-            warn!("TENANT_ID not set - required for dtakologs REST API");
+        if cfg.device_id.is_empty() || cfg.device_secret.is_empty() {
+            warn!("DEVICE_ID / DEVICE_SECRET not set - required for dtakologs device auth");
         }
 
         // Validate rust-logi settings (DVR notifications gRPC)

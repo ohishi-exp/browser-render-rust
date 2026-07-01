@@ -5,6 +5,7 @@
 
 mod browser;
 mod config;
+mod device_auth;
 #[cfg(feature = "grpc")]
 mod grpc_web_client;
 mod jobs;
