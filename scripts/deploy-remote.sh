@@ -26,6 +26,12 @@
 #   CF_ACCESS_CLIENT_SECRET   … CF Access service token secret (Tunnel 使用時のみ)
 #   CONTAINER_NAME            … デプロイ先コンテナ名 (default: browser-render)
 #   DEPLOY_HEALTH_PORT        … 疎通確認する remote localhost ポート (default: 8080)
+#   GHCR_TOKEN / GHCR_USER    … remote docker pull 用の GHCR credential。CI からは
+#                               job 限りの ${{ secrets.GITHUB_TOKEN }} (packages:read)
+#                               + ${{ github.actor }} を渡す想定 (dtako-scraper/
+#                               .github/workflows/deploy.yml と同パターン)。未指定なら
+#                               VPS 側 /opt/browser-render/.env の GHCR_TOKEN に fallback
+#                               (旧 namespace 用の静的 PAT。org package には効かない場合あり)
 #
 # deploy 失敗 (image 未指定 / ssh / health) は即 exit != 0 で loud fail する。
 set -euo pipefail
@@ -37,6 +43,8 @@ IMAGE="${IMAGE:?IMAGE is required}"
 TAG="${TAG:?TAG is required}"
 CONTAINER_NAME="${CONTAINER_NAME:-browser-render}"
 HEALTH_PORT="${DEPLOY_HEALTH_PORT:-8080}"
+GHCR_TOKEN="${GHCR_TOKEN:-}"
+GHCR_USER="${GHCR_USER:-ohishi-exp}"
 
 # Cloudflare Access service token は cloudflared が TUNNEL_SERVICE_TOKEN_* env を読む。
 if [[ -n "${CF_ACCESS_CLIENT_ID:-}" ]]; then
@@ -59,19 +67,26 @@ echo "=== Deploying ${IMAGE}:${TAG} to ${TARGET} (container: ${CONTAINER_NAME}) 
 
 # リモート側の手順 (pull → 入れ替え → health check) はここでヒアドキュメントとして
 # 送り込む。IMAGE/TAG/CONTAINER_NAME/HEALTH_PORT は引数で渡す (remote 側の env
-# 汚染を避ける)。
-if ! ssh "${SSH_OPTS[@]}" "$TARGET" bash -s -- "$IMAGE" "$TAG" "$CONTAINER_NAME" "$HEALTH_PORT" <<'REMOTE_SCRIPT'
+# 汚染を避ける)。GHCR_TOKEN/GHCR_USER は `VAR=val ... bash -s` の env-var 前置き
+# 形式で渡す (positional arg にすると remote 側の `ps` に短時間映り込みうるため、
+# secret はこちらの経路を使う。dtako-scraper/.github/workflows/deploy.yml と同パターン)。
+if ! ssh "${SSH_OPTS[@]}" "$TARGET" \
+    GHCR_TOKEN="$GHCR_TOKEN" GHCR_USER="$GHCR_USER" \
+    bash -s -- "$IMAGE" "$TAG" "$CONTAINER_NAME" "$HEALTH_PORT" <<'REMOTE_SCRIPT'
 set -e
 IMAGE="$1"
 TAG="$2"
 CONTAINER_NAME="$3"
 HEALTH_PORT="$4"
 
-# GHCR ログイン (VPS 側の .env に置いた read 用トークンを使う)。
-if [ -f /opt/browser-render/.env ]; then
-    GHCR_TOKEN=$(grep GHCR_TOKEN /opt/browser-render/.env | cut -d= -f2)
-    if [ -n "$GHCR_TOKEN" ]; then
-        echo "$GHCR_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin
+# GHCR ログイン。CI から渡された job 限りの GHCR_TOKEN (packages:read) を優先し、
+# 未指定なら VPS 側 .env の静的 GHCR_TOKEN に fallback する。
+if [ -n "${GHCR_TOKEN:-}" ]; then
+    echo "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-ohishi-exp}" --password-stdin
+elif [ -f /opt/browser-render/.env ]; then
+    FALLBACK_TOKEN=$(grep -E '^GHCR_TOKEN=' /opt/browser-render/.env | cut -d= -f2-)
+    if [ -n "$FALLBACK_TOKEN" ]; then
+        echo "$FALLBACK_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin
     fi
 fi
 
