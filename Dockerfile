@@ -14,11 +14,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /build
 
-# Copy Cargo files and submodule first for dependency caching.
-# Cargo.lock is gitignored in this repo (see .github/workflows/ci.yml comment),
-# so it never exists in a fresh CI checkout — only copy Cargo.toml and let
-# cargo generate the lockfile during the dependency-build layer below.
-COPY Cargo.toml ./
+# Copy Cargo files and submodule first for dependency caching. Cargo.lock is
+# committed (binary crate) and built with --locked so a stale/tampered
+# lockfile fails the build loudly instead of silently re-resolving deps.
+COPY Cargo.toml Cargo.lock ./
 COPY rust-scraper ./rust-scraper
 
 # Create dummy src to build dependencies
@@ -31,13 +30,13 @@ COPY proto ./proto
 COPY build.rs ./
 
 # Build dependencies (cached layer)
-RUN cargo build --release --features grpc -j ${CARGO_BUILD_JOBS} && rm -rf src
+RUN cargo build --release --locked --features grpc -j ${CARGO_BUILD_JOBS} && rm -rf src
 
 # Copy actual source code
 COPY src ./src
 
 # Touch main.rs to invalidate cache for source files only
-RUN touch src/main.rs && cargo build --release --features grpc -j ${CARGO_BUILD_JOBS}
+RUN touch src/main.rs && cargo build --release --locked --features grpc -j ${CARGO_BUILD_JOBS}
 
 # Stage 2: Runtime with headless-shell
 FROM chromedp/headless-shell:stable AS headless

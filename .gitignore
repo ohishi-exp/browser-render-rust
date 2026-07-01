@@ -4,7 +4,8 @@ rust-logi_ref/
 
 # Rust
 /target/
-Cargo.lock
+# Cargo.lock is committed (this is a binary crate) — see Dockerfile / ci.yml
+# for the --locked build policy this enables.
 
 # IDE
 .idea/
