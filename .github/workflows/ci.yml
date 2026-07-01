@@ -97,6 +97,13 @@ jobs:
           KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
           IMAGE: ghcr.io/ohishi-exp/browser-render-rust
           TAG: ${{ env.IMAGE_TAG }}
+          # VPS 側の docker が ghcr.io/ohishi-exp/* を pull できるよう、job 限りの
+          # GITHUB_TOKEN (packages:read、この push イベントで既に GHCR push に
+          # 使えているのと同じ token) を SSH 越しに渡す。VPS 側の静的 .env
+          # GHCR_TOKEN は旧 namespace 用で新 org package には効かないため
+          # (dtako-scraper/.github/workflows/deploy.yml と同パターン)。
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         run: |
           if [ -z "$KAGOYA_VPS_HOST" ]; then
             echo "::error::secrets.KAGOYA_VPS_HOST is not set" >&2
