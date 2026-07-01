@@ -30,16 +30,18 @@ jobs:
       cargo_test_args: '--no-fail-fast'
       cargo_clippy_args: '--all-targets -- -D warnings'
 
-  # main への merge (push) で Docker image を build → GHCR push → Cloudflare
-  # Tunnel SSH 経由で Kagoya VPS へ deploy する。GitHub Actions runner は VPS へ
-  # 直接到達できない想定のため、`cloudflared access ssh` を ProxyCommand にした
-  # SSH で到達し、CF Access service token で認証する (rust-ichibanboshi ci.yml
-  # と同パターン)。手動 fallback は scripts/deploy-kagoya.sh (直接 SSH) に残す。
+  # main への merge (push) で Docker image を build → GHCR push → Kagoya VPS へ
+  # 直接 SSH で deploy する。`KAGOYA_VPS_SSH_KEY` / `KAGOYA_VPS_HOST` は
+  # dtako-scraper (同じ Kagoya VPS) と共有している既存の ohishi-exp org secret
+  # (dtako-scraper/CLAUDE.md 参照)。webfactory/ssh-agent で鍵を ssh-agent に
+  # 載せ、dtako-scraper/.github/workflows/deploy.yml と同じ直接 SSH パターンで
+  # 到達する (Cloudflare Tunnel は使わない)。手動 fallback は
+  # scripts/deploy-kagoya.sh に残す。
   #
   # 実 deploy (pull + restart + health check) ロジックは scripts/deploy-remote.sh
   # に切り出し、build/push (このジョブ) とは分離している。
   deploy:
-    name: Deploy to Kagoya VPS (CF Tunnel SSH)
+    name: Deploy to Kagoya VPS
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [ci]
     runs-on: ubuntu-latest
@@ -70,36 +72,32 @@ jobs:
           docker push "${IMAGE}:latest"
           echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
 
-      - name: Install cloudflared
-        run: |
-          curl -fsSL \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -o /tmp/cloudflared
-          sudo install -m 0755 /tmp/cloudflared /usr/local/bin/cloudflared
-          cloudflared --version
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.KAGOYA_VPS_SSH_KEY }}
 
-      - name: Write deploy SSH key
+      - name: Add VPS host key
+        env:
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
         run: |
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          install -m 600 /dev/null ~/.ssh/deploy_key
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST="${KAGOYA_VPS_HOST##*@}"
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Deploy over Cloudflare Tunnel SSH
+      - name: Deploy over SSH
         env:
-          DEPLOY_SSH_HOST: ${{ vars.DEPLOY_SSH_HOST }}
-          DEPLOY_SSH_PROXY_COMMAND: "cloudflared access ssh --hostname %h"
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          KAGOYA_VPS_HOST: ${{ secrets.KAGOYA_VPS_HOST }}
           IMAGE: ghcr.io/ohishi-exp/browser-render-rust
           TAG: ${{ env.IMAGE_TAG }}
         run: |
-          if [ -z "$DEPLOY_SSH_HOST" ]; then
-            echo "::error::vars.DEPLOY_SSH_HOST is not set — configure repo/org variable" >&2
+          if [ -z "$KAGOYA_VPS_HOST" ]; then
+            echo "::error::secrets.KAGOYA_VPS_HOST is not set" >&2
             exit 1
           fi
-          export DEPLOY_SSH_KEY_FILE="$HOME/.ssh/deploy_key"
+          # KAGOYA_VPS_HOST は "ubuntu@<ip>" 形式 (dtako-scraper と共有の org secret)。
+          export DEPLOY_SSH_USER="${KAGOYA_VPS_HOST%%@*}"
+          export DEPLOY_SSH_HOST="${KAGOYA_VPS_HOST##*@}"
           bash scripts/deploy-remote.sh
 
   auto-merge:

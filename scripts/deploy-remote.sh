@@ -5,24 +5,25 @@
 # scripts/deploy-kagoya.sh) が担当し、本スクリプトは「イメージを配って
 # コンテナを入れ替える」部分だけを担う。
 #
-# 経路 (直接 SSH / Cloudflare Tunnel SSH) は env で切り替える:
-#   - scripts/deploy-kagoya.sh (手動 fallback) … 直接 SSH (VPS_HOST=ubuntu@<IP>)
-#   - ci.yml deploy job (自動)                  … DEPLOY_SSH_HOST=<tunnel hostname>
-#                                                  DEPLOY_SSH_PROXY_COMMAND="cloudflared access ssh --hostname %h"
-#                                                  CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (service token)
+# 接続方式は直接 SSH が基本 (dtako-scraper と同じ Kagoya VPS への直接到達):
+#   - ci.yml deploy job (自動)     … webfactory/ssh-agent で秘密鍵を ssh-agent に
+#                                    載せ、DEPLOY_SSH_HOST/USER だけ渡す
+#   - scripts/deploy-kagoya.sh (手動 fallback) … DEPLOY_SSH_KEY_FILE で鍵ファイル指定
+# Cloudflare Tunnel 経由 (DEPLOY_SSH_PROXY_COMMAND) も引き続きサポートするが、
+# 現状 CI/手動どちらも使用していない (将来 VPS 側を Tunnel 化する場合の保険)。
 #
 # 必須 env:
-#   DEPLOY_SSH_HOST   … 接続先 SSH ホスト名
+#   DEPLOY_SSH_HOST   … 接続先 SSH ホスト名 (IP でも可)
 #   IMAGE             … pull する image (タグ無し。例: ghcr.io/ohishi-exp/browser-render-rust)
 #   TAG               … デプロイするタグ
 #
 # 任意 env:
 #   DEPLOY_SSH_USER          … SSH ユーザー (default: ubuntu)
-#   DEPLOY_SSH_KEY_FILE      … 秘密鍵 path (未指定なら ssh-agent / 既定鍵)
+#   DEPLOY_SSH_KEY_FILE      … 秘密鍵 path (未指定なら ssh-agent / 既定鍵を使う)
 #   DEPLOY_SSH_PROXY_COMMAND … ssh -o ProxyCommand=<...> に渡す値
 #                               (Cloudflare Tunnel SSH なら "cloudflared access ssh --hostname %h")
-#   CF_ACCESS_CLIENT_ID       … CF Access service token id  (cloudflared が読む)
-#   CF_ACCESS_CLIENT_SECRET   … CF Access service token secret
+#   CF_ACCESS_CLIENT_ID       … CF Access service token id  (cloudflared が読む、Tunnel 使用時のみ)
+#   CF_ACCESS_CLIENT_SECRET   … CF Access service token secret (Tunnel 使用時のみ)
 #   CONTAINER_NAME            … デプロイ先コンテナ名 (default: browser-render)
 #   DEPLOY_HEALTH_PORT        … 疎通確認する remote localhost ポート (default: 8080)
 #
