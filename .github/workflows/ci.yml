@@ -145,12 +145,21 @@ jobs:
         run: |
           if [ -z "$KAGOYA_VPS_HOST" ]; then
             echo "::error::secrets.KAGOYA_VPS_HOST is not set" >&2
+            echo "### Deploy: \`${IMAGE}:${TAG}\` — ❌ failed (KAGOYA_VPS_HOST unset)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           # KAGOYA_VPS_HOST は "ubuntu@<ip>" 形式 (dtako-scraper と共有の org secret)。
           export DEPLOY_SSH_USER="${KAGOYA_VPS_HOST%%@*}"
           export DEPLOY_SSH_HOST="${KAGOYA_VPS_HOST##*@}"
-          bash scripts/deploy-remote.sh
+          # deploy-remote.sh の health check 結果 (VPS 上でコンテナ再起動後の
+          # curl /health) はログの中に埋もれて Summary タブに出ないため、ここで
+          # pass/fail を明示的に 1 行 $GITHUB_STEP_SUMMARY に書き出す。
+          if bash scripts/deploy-remote.sh; then
+            echo "### Deploy: \`${IMAGE}:${TAG}\` — ✅ health check passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Deploy: \`${IMAGE}:${TAG}\` — ❌ failed (health check or SSH deploy, see step log above)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
   auto-merge:
     name: Auto Merge
