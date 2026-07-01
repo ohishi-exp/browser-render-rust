@@ -28,6 +28,44 @@ jobs:
       cargo_test_args: '--no-fail-fast'
       cargo_clippy_args: '--all-targets -- -D warnings'
 
+  # ci-workflows/rust-ci.yml の `extra_smoke_test` input は
+  # `github.ref == 'refs/heads/main' && github.event_name == 'push'` 固定の
+  # gate 付き (fork PR で secret 不可視な誤検知を避ける設計) なので、default
+  # branch が `master` のこの repo では PR は元より push でも絶対に発火しない。
+  # 「PR 時点 (deploy 前) で起動不良を検知したい」という目的とは噛み合わないため、
+  # 共有 reusable には乗らず、このリポジトリ専用の job として直接組む。
+  # `ci` job (rust-ci.yml) が upload した release binary artifact をそのまま使う
+  # ので再ビルドしない。
+  smoke-test:
+    name: Health check smoke test
+    needs: [ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: browser-render-linux-x86_64
+          path: .
+
+      - name: Start binary and curl /health
+        run: |
+          set -euo pipefail
+          chmod +x ./browser-render
+          ./browser-render --server http --http-port 8080 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/health > /dev/null; then
+              echo "Health check passed"
+              exit 0
+            fi
+            echo "Waiting for /health... (${i}/15)"
+            sleep 1
+          done
+
+          echo "::error::/health did not become healthy within 15s"
+          exit 1
+
   # main への merge (push) で Docker image を build → GHCR push → Kagoya VPS へ
   # 直接 SSH で deploy する。`KAGOYA_VPS_SSH_KEY` / `KAGOYA_VPS_HOST` は
   # dtako-scraper (同じ Kagoya VPS) と共有している既存の ohishi-exp org secret
@@ -41,7 +79,7 @@ jobs:
   deploy:
     name: Deploy to Kagoya VPS
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: [ci]
+    needs: [ci, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -116,12 +154,13 @@ jobs:
 
   auto-merge:
     name: Auto Merge
-    needs: [ci]
+    needs: [ci, smoke-test]
     if: >-
       always() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.draft == false &&
-      needs.ci.result == 'success'
+      needs.ci.result == 'success' &&
+      needs['smoke-test'].result == 'success'
     uses: ippoan/ci-workflows/.github/workflows/auto-merge.yml@main
     # deploy job は push (refs/heads/master) 限定 trigger なので PR run の
     # auto-merge とは排他で並走しない (= merge → branch 削除で deploy が cancel
