@@ -14,8 +14,11 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /build
 
-# Copy Cargo files and submodule first for dependency caching
-COPY Cargo.toml Cargo.lock ./
+# Copy Cargo files and submodule first for dependency caching.
+# Cargo.lock is gitignored in this repo (see .github/workflows/ci.yml comment),
+# so it never exists in a fresh CI checkout — only copy Cargo.toml and let
+# cargo generate the lockfile during the dependency-build layer below.
+COPY Cargo.toml ./
 COPY rust-scraper ./rust-scraper
 
 # Create dummy src to build dependencies
