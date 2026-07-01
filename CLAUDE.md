@@ -145,28 +145,52 @@ curl -X POST http://localhost:8080/v1/etc/scrape/batch/env \
 
 ## Docker & Deploy
 
-### 自動デプロイ
-`git push`で自動的にビルド・デプロイが実行される（pre-pushフック）。
+### 自動デプロイ (CI → Kagoya VPS)
+
+`master` への merge (push) で `ci.yml` の `deploy` job が Docker image を build →
+GHCR push → **Kagoya VPS** へ直接 SSH で deploy する (dtako-scraper と同じ VPS)。
+deploy 後に VPS 上で `/health` を叩いて疎通確認し、失敗すれば loud fail する。
+
+- build/push は deploy job、実 deploy (pull + restart + health check) ロジックは
+  `scripts/deploy-remote.sh` に切り出して共有 (CI / 手動 fallback 両用)
+- `deploy` job には `concurrency: deploy-kagoya-vps` (cancel-in-progress: false) を
+  張り、連続 push で同じ VPS の同じコンテナ名を取り合うレースを防ぐ
+- 必要な secret: `KAGOYA_VPS_SSH_KEY` / `KAGOYA_VPS_HOST` (ohishi-exp org secret、
+  dtako-scraper と共有)。VPS 側 docker pull は job 限りの `GITHUB_TOKEN` を SSH 越しに
+  渡して認証する (VPS の静的 `.env` GHCR_TOKEN は旧 namespace 用の fallback)
 
 ```bash
-git push  # → build → push to GHCR → deploy to GCE
+# 手動 fallback (要: 手元 docker + VPS への SSH 鍵)
+KAGOYA_VPS_HOST="ubuntu@<vps-ip>" ./scripts/deploy.sh
 ```
 
-### 手動デプロイ
-```bash
-./scripts/deploy.sh
-```
+### device credential の provision (dtakologs 送信の初期設定)
 
-### GCE初期セットアップ（1回のみ）
-```bash
-# 1. セットアップスクリプトをコピー・実行
-gcloud compute scp scripts/gce-setup.sh instance-20251207-115015:~ --zone=asia-northeast1-b
-gcloud compute ssh instance-20251207-115015 --zone=asia-northeast1-b --command="bash ~/gce-setup.sh"
+dtakologs (rust-alc-api `/api/dtako-logs/bulk`) 送信は Cloud Run IAM lockdown 下の
+rust-alc-api に対し auth-worker の `/device-data-proxy` 経由で **device JWT** 認証する
+(Refs rust-alc-api#434)。必要な env (`AUTH_WORKER_URL` / `DEVICE_ID` / `DEVICE_SECRET`) は
+**Provision device credential** workflow (`.github/workflows/provision-device.yml`、
+手動 `workflow_dispatch`) が VPS の `.env` に自動投入する。
 
-# 2. ローカルの.envをGCEにコピー（GHCR_TOKEN含む）
-gcloud compute scp .env instance-20251207-115015:/tmp/.env --zone=asia-northeast1-b
-gcloud compute ssh instance-20251207-115015 --zone=asia-northeast1-b --command="sudo mv /tmp/.env /opt/browser-render/.env"
-```
+- Actions → **Provision device credential** → Run workflow で `tenant_id` を入力して実行
+- `INTERNAL_SHARED_SECRET` (ohishi-exp org secret、**CI にだけ置く。VPS には配らない**) で
+  auth-worker `/device/pair-internal` を叩き、tenant + `device-dtako-ingest` role
+  (= `/api/dtako-logs/bulk` だけ) にスコープした credential を発行 → `deploy-remote.sh`
+  経由で `.env` に upsert + 最新 image で再起動
+- device credential は VPS ではなく tenant に紐付くので、新 VPS / rotate 時にこの workflow を
+  1 回叩けば済む (手動 curl/SSH 不要)。`device_secret` は生成直後に `::add-mask::` し、
+  SSH env-var 前置き経路でのみ VPS に渡してログに出さない
+
+### `.env` の扱い (host 境界の秘密は CI で触らない)
+
+`deploy-remote.sh` の `upsert_env` は `AUTH_WORKER_URL` / `DEVICE_ID` / `DEVICE_SECRET` の
+**3 行だけ**を差し替え、他の行は保持する (通常 deploy は値を渡さないので `.env` を触らない)。
+
+- `ETC_ACCOUNTS` / `ETC_DOWNLOAD_PATH` / `SMTP_*` / `GHCR_TOKEN` / `VEHICLE_JOB_TIMEOUT` 等は
+  **host 境界の秘密として VPS の `.env` に残す** (GitHub には置かない、dtako-scraper / smb-watch
+  と同方針)
+- **真っさらな新 VPS** ではこれらが存在しないので、`.env` を別途手動でセットアップする必要がある
+  (provision workflow が面倒を見るのは device 認証の 3 つだけ)
 
 ### Docker設定
 - `--network host`: ポート公開なし、localhost:8080でアクセス可能
