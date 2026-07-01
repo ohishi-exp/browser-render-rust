@@ -1,5 +1,8 @@
 # Stage 1: Build Rust binary
-FROM rust:1.85-slim-bookworm AS builder
+# 1.94 matches the toolchain the committed Cargo.lock was resolved with;
+# some pinned transitive deps (icu_*, home, time) require rustc >= 1.86-1.88,
+# so 1.85 fails with "rustc X is not supported by the following packages".
+FROM rust:1.94-slim-bookworm AS builder
 
 # Limit parallel compilation jobs (default: 2)
 ARG CARGO_BUILD_JOBS=2
