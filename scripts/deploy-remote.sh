@@ -32,6 +32,15 @@
 #                               .github/workflows/deploy.yml と同パターン)。未指定なら
 #                               VPS 側 /opt/browser-render/.env の GHCR_TOKEN に fallback
 #                               (旧 namespace 用の静的 PAT。org package には効かない場合あり)
+#   AUTH_WORKER_URL           … dtakologs 送信の device JWT 発行元 (rust-alc-api#434)。
+#   DEVICE_ID / DEVICE_SECRET … device pairing で発行した credential。
+#                               この 3 つは指定されていれば VPS 側 /opt/browser-render/.env に
+#                               upsert される (= VPS が変わっても deploy し直すだけで再設定
+#                               不要になる)。device credential は VPS ではなく tenant に紐付く
+#                               ため、同じ値をどの VPS でも使い回せる。**空なら .env を触らない**
+#                               (= 既存の手動 .env 運用と後方互換)。CI からは
+#                               ${{ secrets.BROWSER_RENDER_DEVICE_ID / _SECRET }} を渡す想定
+#                               (GHCR_TOKEN と同じ SSH env-var 前置き経路で値をログに出さない)。
 #
 # deploy 失敗 (image 未指定 / ssh / health) は即 exit != 0 で loud fail する。
 set -euo pipefail
@@ -45,6 +54,10 @@ CONTAINER_NAME="${CONTAINER_NAME:-browser-render}"
 HEALTH_PORT="${DEPLOY_HEALTH_PORT:-8080}"
 GHCR_TOKEN="${GHCR_TOKEN:-}"
 GHCR_USER="${GHCR_USER:-ohishi-exp}"
+# dtakologs 送信の device JWT 設定 (rust-alc-api#434)。空なら .env を触らない。
+AUTH_WORKER_URL="${AUTH_WORKER_URL:-}"
+DEVICE_ID="${DEVICE_ID:-}"
+DEVICE_SECRET="${DEVICE_SECRET:-}"
 
 # Cloudflare Access service token は cloudflared が TUNNEL_SERVICE_TOKEN_* env を読む。
 if [[ -n "${CF_ACCESS_CLIENT_ID:-}" ]]; then
@@ -72,23 +85,44 @@ echo "=== Deploying ${IMAGE}:${TAG} to ${TARGET} (container: ${CONTAINER_NAME}) 
 # secret はこちらの経路を使う。dtako-scraper/.github/workflows/deploy.yml と同パターン)。
 if ! ssh "${SSH_OPTS[@]}" "$TARGET" \
     GHCR_TOKEN="$GHCR_TOKEN" GHCR_USER="$GHCR_USER" \
+    AUTH_WORKER_URL="$AUTH_WORKER_URL" DEVICE_ID="$DEVICE_ID" DEVICE_SECRET="$DEVICE_SECRET" \
     bash -s -- "$IMAGE" "$TAG" "$CONTAINER_NAME" "$HEALTH_PORT" <<'REMOTE_SCRIPT'
 set -e
 IMAGE="$1"
 TAG="$2"
 CONTAINER_NAME="$3"
 HEALTH_PORT="$4"
+ENV_FILE=/opt/browser-render/.env
 
 # GHCR ログイン。CI から渡された job 限りの GHCR_TOKEN (packages:read) を優先し、
 # 未指定なら VPS 側 .env の静的 GHCR_TOKEN に fallback する。
 if [ -n "${GHCR_TOKEN:-}" ]; then
     echo "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-ohishi-exp}" --password-stdin
-elif [ -f /opt/browser-render/.env ]; then
-    FALLBACK_TOKEN=$(grep -E '^GHCR_TOKEN=' /opt/browser-render/.env | cut -d= -f2-)
+elif [ -f "$ENV_FILE" ]; then
+    FALLBACK_TOKEN=$(grep -E '^GHCR_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
     if [ -n "$FALLBACK_TOKEN" ]; then
         echo "$FALLBACK_TOKEN" | docker login ghcr.io -u ohishi-exp --password-stdin
     fi
 fi
+
+# device JWT 設定を .env に upsert する。値が空のキーは触らない (= 手動運用と後方互換)。
+# value は printf でファイルに書くだけで stdout に出さない (ログ非表示、key 名だけ echo)。
+upsert_env() {
+    key="$1"
+    val="$2"
+    [ -n "$val" ] || return 0
+    touch "$ENV_FILE"
+    tmp="${ENV_FILE}.tmp.$$"
+    # 当該 key 以外の行を残す (grep は no-match で exit 1 になり得るので許容)。
+    grep -v "^${key}=" "$ENV_FILE" > "$tmp" 2>/dev/null || true
+    printf '%s=%s\n' "$key" "$val" >> "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$ENV_FILE"
+    echo "  .env updated: ${key}"
+}
+upsert_env AUTH_WORKER_URL "${AUTH_WORKER_URL:-}"
+upsert_env DEVICE_ID "${DEVICE_ID:-}"
+upsert_env DEVICE_SECRET "${DEVICE_SECRET:-}"
 
 echo 'Pulling new image...'
 docker pull "${IMAGE}:${TAG}"
