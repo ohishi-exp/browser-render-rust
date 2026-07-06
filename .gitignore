@@ -31,5 +31,6 @@ data/
 .DS_Store
 Thumbs.db
 logs/
-.claude/skills
+.claude/skills/*
+!.claude/skills/browser-render-rust-map/
 tools
